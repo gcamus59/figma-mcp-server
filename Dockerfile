@@ -42,7 +42,11 @@ COPY server.js ./
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 USER appuser
 
-# The server communicates over stdio (MCP protocol).
+# Expose the HTTP/SSE port
+EXPOSE 3000
+
+# The server listens on port 3000 (HTTP/SSE transport).
 # FIGMA_ACCESS_TOKEN must be provided as an environment variable at runtime
 # (e.g. via a Kubernetes Secret or `docker run -e FIGMA_ACCESS_TOKEN=...`).
+# Pass --stdio to use stdio transport instead (e.g. for Claude Desktop).
 CMD ["node", "server.js"]

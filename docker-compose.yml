@@ -5,9 +5,8 @@ services:
       dockerfile: Dockerfile
       target: runtime
     image: figma-mcp-server:local
-    # The MCP server communicates over stdio, so keep stdin open.
-    stdin_open: true
-    tty: false
+    ports:
+      - "${PORT:-3000}:3000"
     environment:
       # Pass the token from your local shell environment.
       # Run: export FIGMA_ACCESS_TOKEN=<your-token> before docker compose up

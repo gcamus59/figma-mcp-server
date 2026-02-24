@@ -175,6 +175,21 @@ const server = await startServer(process.env.FIGMA_ACCESS_TOKEN);
 - [Docker](https://docs.docker.com/get-docker/) 20.10+
 - A valid Figma access token (see [Configuration](#configuration))
 
+### Transport modes
+
+| Mode | Flag | Use case |
+|------|------|----------|
+| **HTTP/SSE** (default) | _(none)_ | Kubernetes, Docker, any networked deployment |
+| **stdio** | `--stdio` | Local Claude Desktop integration |
+
+The default mode starts an Express HTTP server on port **3000** with three endpoints:
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/sse` | `GET` | Establishes an MCP session over Server-Sent Events |
+| `/messages?sessionId=<id>` | `POST` | Sends JSON-RPC requests for an active session |
+| `/health` | `GET` | Health check (K8s liveness/readiness probe) |
+
 ### Build the image
 
 ```bash
@@ -185,17 +200,29 @@ The Dockerfile uses a two-stage build:
 1. **Build stage** – installs all dependencies and compiles TypeScript.
 2. **Runtime stage** – production dependencies only, compiled output, and a non-root user (`appuser`).
 
-### Run the container
-
-The server communicates over stdio (MCP protocol), so pass the token as an environment variable rather than baking it into the image:
+### Run the container (HTTP/SSE mode)
 
 ```bash
-docker run --rm -i \
+docker run --rm -p 3000:3000 \
   -e FIGMA_ACCESS_TOKEN=your_token_here \
   figma-mcp-server:latest
 ```
 
-> `--rm` removes the container on exit; `-i` keeps stdin open for stdio-based MCP communication.
+Verify the server is healthy:
+
+```bash
+curl http://localhost:3000/health
+```
+
+### Run the container (stdio mode — Claude Desktop)
+
+```bash
+docker run --rm -i \
+  -e FIGMA_ACCESS_TOKEN=your_token_here \
+  figma-mcp-server:latest node server.js --stdio
+```
+
+> `-i` keeps stdin open for stdio-based MCP communication.
 
 ### Local development with Docker Compose
 
@@ -203,7 +230,7 @@ docker run --rm -i \
 # Export your token into the shell first
 export FIGMA_ACCESS_TOKEN=your_token_here
 
-# Build and start
+# Build and start (serves HTTP/SSE on http://localhost:3000)
 docker compose up --build
 
 # Tear down
@@ -212,9 +239,15 @@ docker compose down
 
 Alternatively, create a local `.env` file (already in `.gitignore`) and uncomment the `env_file` block in `docker-compose.yml`.
 
-### Kubernetes
+### Kubernetes + Kong ingress
 
-Kubernetes deployment manifests (Deployment, Service, Secret, etc.) are handled in a separate PR. The container image accepts `FIGMA_ACCESS_TOKEN` as a plain environment variable, making it straightforward to inject via a Kubernetes Secret.
+Kubernetes manifests (Deployment, Service, Secret, etc.) are handled in a separate PR. Key points for operators:
+
+- **Sticky sessions are required.** Each `/sse` connection is stateful — the matching `POST /messages` calls must reach the same pod. Configure Kong with `hash_on: cookie` upstream or the `session` plugin.
+- **Increase `proxy_read_timeout`** on the Kong route to at least `3600` seconds to keep SSE connections alive.
+- **Health check:** use `GET /health` (returns HTTP 200 when healthy, 503 when not) for both liveness and readiness probes.
+- **Secret injection:** set `FIGMA_ACCESS_TOKEN` via a Kubernetes Secret mounted as an environment variable.
+- **Single replica** avoids the sticky-session requirement entirely — a valid choice for low-traffic internal tooling.
 
 ---
 

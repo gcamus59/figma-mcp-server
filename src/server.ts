@@ -1,7 +1,9 @@
 import { EventEmitter } from 'events';
+import http from 'http';
 import os from 'os';
+import express, { Request, Response } from 'express';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { FigmaHandler } from './handlers/figma.js';
 import { AuthMiddleware } from './middleware/auth.js';
@@ -30,8 +32,7 @@ interface FigmaApiStats {
 }
 
 export class MCPServer extends EventEmitter {
-    private readonly server: Server;
-    private transport: StdioServerTransport | null = null;
+    private httpServer: http.Server | null = null;
     private healthCheckInterval: NodeJS.Timeout | null = null;
     private state: ServerState = 'starting';
     private startTime: number;
@@ -42,6 +43,9 @@ export class MCPServer extends EventEmitter {
     private port?: number;
     private figmaHandler: FigmaHandler;
     private readonly logger: Logger;
+
+    // Active SSE sessions keyed by sessionId
+    private sessions: Map<string, SSEServerTransport> = new Map();
 
     private connectionStats: ConnectionStats = {
         totalRequests: 0,
@@ -71,7 +75,6 @@ export class MCPServer extends EventEmitter {
         this.lastActivityTime = Date.now();
         this.logger = new Logger(debug);
 
-        // Initialize Figma handler with stats callback
         this.figmaHandler = new FigmaHandler(figmaToken, (stats) => {
             if (stats.totalApiCalls) {
                 this.figmaApiStats.totalApiCalls += stats.totalApiCalls;
@@ -93,26 +96,23 @@ export class MCPServer extends EventEmitter {
                 this.figmaApiStats.lastError = stats.lastError;
             }
         });
+    }
 
-        // Initialize server with stricter error handling
-        this.server = new Server(
-            {
-                name: "figma-mcp-server",
-                version: "1.0.0"
-            },
-            {
-                capabilities: {
-                    tools: {}
-                }
-            }
+    /**
+     * Creates a new MCP SDK Server instance with all request handlers registered.
+     * Each SSE session requires its own Server instance because server.connect()
+     * replaces the previous transport.
+     */
+    private createMcpSession(): Server {
+        const server = new Server(
+            { name: "figma-mcp-server", version: "1.0.0" },
+            { capabilities: { tools: {} } }
         );
-        
-        // Set up global error handler for proper JSON-RPC error responses
-        this.server.onerror = (error: unknown) => {
-            this.logger.error('Global error handler caught:', error);
-            // Ensure error is properly formatted for JSON-RPC
+
+        server.onerror = (error: unknown) => {
+            this.logger.error('MCP session error:', error);
             return {
-                code: -32603, // Internal error
+                code: -32603,
                 message: error instanceof Error ? error.message : 'Unknown server error',
                 data: {
                     timestamp: Date.now(),
@@ -121,30 +121,27 @@ export class MCPServer extends EventEmitter {
             };
         };
 
-        // Set up request handlers
-        this.server.setRequestHandler(ListToolsRequestSchema, async () => {
-            return {
-                tools: await this.figmaHandler.listTools()
-            };
-        });
+        server.setRequestHandler(ListToolsRequestSchema, async () => ({
+            tools: await this.figmaHandler.listTools()
+        }));
 
-        this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+        server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const startTime = Date.now();
             this.connectionStats.totalRequests++;
-            
+
             try {
                 const result = await this.figmaHandler.callTool(
                     request.params.name,
                     request.params.arguments
                 );
-                
+
                 this.connectionStats.successfulRequests++;
                 const responseTime = Date.now() - startTime;
                 this.connectionStats.avgResponseTime = (
                     this.connectionStats.avgResponseTime * (this.connectionStats.successfulRequests - 1) +
                     responseTime
                 ) / this.connectionStats.successfulRequests;
-                
+
                 return result;
             } catch (error) {
                 this.connectionStats.failedRequests++;
@@ -157,6 +154,8 @@ export class MCPServer extends EventEmitter {
                 this.lastActivityTime = Date.now();
             }
         });
+
+        return server;
     }
 
     private getHealthStatus() {
@@ -170,8 +169,8 @@ export class MCPServer extends EventEmitter {
             network: {
                 localAddress: 'localhost',
                 activePort: this.port || this.defaultPort,
-                stdioTransportEnabled: Boolean(this.transport),
-                sseTransportEnabled: false
+                sseTransportEnabled: true,
+                activeSessions: this.sessions.size
             },
             connections: this.connectionStats,
             figmaApi: this.figmaApiStats,
@@ -194,118 +193,167 @@ export class MCPServer extends EventEmitter {
     private startHealthCheck(): void {
         this.healthCheckInterval = setInterval(() => {
             const health = this.getHealthStatus();
-            
+
             if (this.debug || !health.isHealthy) {
                 this.logger.log('Health Status:', health);
             }
-            
+
             this.emit('healthUpdate', health);
         }, 10000);
     }
 
     public async start(): Promise<void> {
-        try {
-            // Initialize transport with enhanced error handling
-            this.transport = new StdioServerTransport();
-            
-            // Set up comprehensive transport error handling
-            this.transport.onerror = (error: Error) => {
-                this.logger.error('Transport error:', error);
-                this.handleError(error);
-            };
-            
-            // Add message validation and handling
-            this.transport.onmessage = (message: any) => {
-                try {
-                    // Validate that message is proper JSON-RPC
-                    if (!message || (typeof message !== 'object')) {
-                        this.logger.error('Invalid message received:', message);
-                    }
-                } catch (err) {
-                    this.logger.error('Error in message handler:', err);
-                }
-            };
+        const app = express();
+        app.use(express.json());
 
-            await this.server.connect(this.transport);
-            this.state = 'running';
-            this.startHealthCheck();
-            
-            const initHealth = this.getHealthStatus();
-            this.logger.info('Server started', {
-                state: initHealth.state,
-                health: initHealth.isHealthy,
-                transport: 'stdio',
-                protocol: 'MCP 1.0',
-                capabilities: ['tools']
+        // Health check — used by K8s liveness/readiness probes
+        app.get('/health', (_req: Request, res: Response) => {
+            const health = this.getHealthStatus();
+            res.status(health.isHealthy ? 200 : 503).json(health);
+        });
+
+        // SSE endpoint — each GET establishes a new MCP session
+        app.get('/sse', async (req: Request, res: Response) => {
+            this.logger.info('New SSE connection from', req.ip);
+            const transport = new SSEServerTransport('/messages', res);
+            const mcpServer = this.createMcpSession();
+
+            this.sessions.set(transport.sessionId, transport);
+
+            res.on('close', () => {
+                this.logger.info('SSE connection closed, session:', transport.sessionId);
+                this.sessions.delete(transport.sessionId);
             });
-            this.emit('healthUpdate', initHealth);
-            
-            this.logger.log('Initial health status:', initHealth);
-        } catch (error) {
-            this.state = 'error';
-            if (error instanceof Error) {
-                this.logger.error('Failed to start server:', error.message, {
-                    stack: error.stack,
-                    name: error.name
-                });
-                this.handleError(error);
-            } else {
-                this.logger.error('Failed to start server with unknown error type:', error);
+
+            try {
+                await mcpServer.connect(transport);
+                await transport.start();
+            } catch (error) {
+                this.sessions.delete(transport.sessionId);
+                this.logger.error('SSE session error:', error);
+                if (error instanceof Error) this.handleError(error);
             }
-            throw error;
-        }
+        });
+
+        // Message endpoint — client POSTs JSON-RPC requests to this route
+        app.post('/messages', async (req: Request, res: Response) => {
+            const sessionId = req.query.sessionId as string;
+
+            if (!sessionId) {
+                res.status(400).json({ error: 'Missing sessionId query parameter' });
+                return;
+            }
+
+            const transport = this.sessions.get(sessionId);
+            if (!transport) {
+                res.status(404).json({ error: `Session '${sessionId}' not found` });
+                return;
+            }
+
+            try {
+                await transport.handlePostMessage(req, res);
+            } catch (error) {
+                this.logger.error('Error handling POST message:', error);
+                if (!res.headersSent) {
+                    res.status(500).json({ error: 'Internal server error' });
+                }
+            }
+        });
+
+        return new Promise((resolve, reject) => {
+            const listenPort = this.port || this.defaultPort;
+
+            this.httpServer = app.listen(listenPort, () => {
+                this.state = 'running';
+                this.startHealthCheck();
+
+                const initHealth = this.getHealthStatus();
+                this.logger.info('Server started', {
+                    state: initHealth.state,
+                    health: initHealth.isHealthy,
+                    transport: 'sse',
+                    port: listenPort,
+                    protocol: 'MCP 1.0',
+                    capabilities: ['tools'],
+                    endpoints: {
+                        sse: `http://localhost:${listenPort}/sse`,
+                        messages: `http://localhost:${listenPort}/messages`,
+                        health: `http://localhost:${listenPort}/health`
+                    }
+                });
+                this.emit('healthUpdate', initHealth);
+                resolve();
+            });
+
+            this.httpServer.on('error', (error: Error) => {
+                this.state = 'error';
+                this.logger.error('HTTP server error:', error);
+                this.handleError(error);
+                reject(error);
+            });
+        });
     }
 
     public async stop(): Promise<void> {
         this.state = 'stopping';
-        
+
         if (this.healthCheckInterval) {
             clearInterval(this.healthCheckInterval);
             this.healthCheckInterval = null;
         }
-        
-        if (this.transport) {
-            await this.server.connect(this.transport); // Reset connection
-            this.transport = null;
+
+        // Close all active SSE sessions gracefully
+        for (const [sessionId, transport] of this.sessions) {
+            try {
+                await transport.close();
+            } catch (error) {
+                this.logger.error(`Error closing session ${sessionId}:`, error);
+            }
         }
+        this.sessions.clear();
+
+        await new Promise<void>((resolve) => {
+            if (!this.httpServer) {
+                resolve();
+                return;
+            }
+            this.httpServer.close(() => {
+                this.httpServer = null;
+                resolve();
+            });
+        });
+
         this.state = 'stopped';
-        
+
         const finalHealth = this.getHealthStatus();
         this.logger.info('Server stopped', {
             runtime: {
                 uptime: finalHealth.uptime,
                 requests: finalHealth.connections.totalRequests,
-                successRate: (finalHealth.connections.successfulRequests / 
-                            Math.max(finalHealth.connections.totalRequests, 1) * 100).toFixed(2) + '%',
+                successRate: (finalHealth.connections.successfulRequests /
+                    Math.max(finalHealth.connections.totalRequests, 1) * 100).toFixed(2) + '%',
                 errors: this.connectionErrors
             }
         });
-        
-        if (this.debug) {
-            this.logger.log('Final health status:', finalHealth);
-        }
-        
+
         this.emit('healthUpdate', finalHealth);
     }
 }
 
 export const startServer = async (
-    figmaToken: string, 
+    figmaToken: string,
     debug = false,
     port = 3000
 ): Promise<MCPServer> => {
     const logger = new Logger(debug);
-    
+
     logger.info('Starting Figma MCP Server', {
         version: process.env.npm_package_version || '1.0.0',
         platform: `${os.platform()} (${os.release()})`,
         nodeVersion: process.version,
-        config: {
-            debug,
-            port
-        }
+        config: { debug, port }
     });
-    
+
     try {
         logger.info('Validating Figma access token...');
         const auth = new AuthMiddleware(figmaToken);
@@ -319,4 +367,4 @@ export const startServer = async (
         logger.error('Failed to start server:', error);
         throw error;
     }
-}
+};
