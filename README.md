@@ -168,6 +168,56 @@ const server = await startServer(process.env.FIGMA_ACCESS_TOKEN);
    }
    ```
 
+## Running with Docker
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) 20.10+
+- A valid Figma access token (see [Configuration](#configuration))
+
+### Build the image
+
+```bash
+docker build -t figma-mcp-server:latest .
+```
+
+The Dockerfile uses a two-stage build:
+1. **Build stage** – installs all dependencies and compiles TypeScript.
+2. **Runtime stage** – production dependencies only, compiled output, and a non-root user (`appuser`).
+
+### Run the container
+
+The server communicates over stdio (MCP protocol), so pass the token as an environment variable rather than baking it into the image:
+
+```bash
+docker run --rm -i \
+  -e FIGMA_ACCESS_TOKEN=your_token_here \
+  figma-mcp-server:latest
+```
+
+> `--rm` removes the container on exit; `-i` keeps stdin open for stdio-based MCP communication.
+
+### Local development with Docker Compose
+
+```bash
+# Export your token into the shell first
+export FIGMA_ACCESS_TOKEN=your_token_here
+
+# Build and start
+docker compose up --build
+
+# Tear down
+docker compose down
+```
+
+Alternatively, create a local `.env` file (already in `.gitignore`) and uncomment the `env_file` block in `docker-compose.yml`.
+
+### Kubernetes
+
+Kubernetes deployment manifests (Deployment, Service, Secret, etc.) are handled in a separate PR. The container image accepts `FIGMA_ACCESS_TOKEN` as a plain environment variable, making it straightforward to inject via a Kubernetes Secret.
+
+---
+
 ## API Documentation
 
 ### Server Methods

@@ -1,0 +1,39 @@
+# Version control
+.git
+.gitignore
+
+# Dependencies (reinstalled inside the image)
+node_modules
+
+# Build output (produced inside the image)
+dist
+
+# Test and coverage artefacts
+coverage
+tests
+jest.config.js
+jest.setup.js
+
+# Local environment files — never bake secrets into the image
+.env
+.env.*
+!.env.example
+
+# Editor and OS artefacts
+.DS_Store
+*.log
+*.tmp
+
+# Development configuration
+.eslintrc.json
+# tsconfig.json is intentionally NOT excluded — required by the build stage
+
+# Documentation (not needed at runtime)
+README.md
+examples
+git_commands.txt
+
+# Docker files themselves (not needed at runtime)
+Dockerfile
+docker-compose.yml
+.dockerignore

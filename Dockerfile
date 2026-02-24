@@ -1,0 +1,48 @@
+# =============================================================================
+# Stage 1 – build
+# Install all dependencies (including dev), compile TypeScript to dist/.
+# =============================================================================
+FROM node:22-alpine AS build
+
+WORKDIR /app
+
+# Copy manifests first for layer-cache efficiency.
+# --ignore-scripts prevents the postinstall hook from running `tsc` before
+# the source files are present.
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+
+# Copy source and compile
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npm run build
+
+# =============================================================================
+# Stage 2 – runtime
+# Lean image: only production deps + compiled output.
+# Runs as a non-root user for least-privilege execution.
+# =============================================================================
+FROM node:22-alpine AS runtime
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+# Install production dependencies only.
+# --ignore-scripts skips the postinstall hook (which calls `tsc`) because
+# the compiled output is already copied from the build stage.
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts
+
+# Copy compiled output and the root entry-point from the build stage
+COPY --from=build /app/dist ./dist
+COPY server.js ./
+
+# Create a non-root user/group and switch to it
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+
+# The server communicates over stdio (MCP protocol).
+# FIGMA_ACCESS_TOKEN must be provided as an environment variable at runtime
+# (e.g. via a Kubernetes Secret or `docker run -e FIGMA_ACCESS_TOKEN=...`).
+CMD ["node", "server.js"]

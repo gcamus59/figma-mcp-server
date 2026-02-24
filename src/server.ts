@@ -4,6 +4,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { FigmaHandler } from './handlers/figma.js';
+import { AuthMiddleware } from './middleware/auth.js';
 import { ServerState, ServerStats } from './types.js';
 import { Logger } from './logger.js';
 
@@ -306,6 +307,11 @@ export const startServer = async (
     });
     
     try {
+        logger.info('Validating Figma access token...');
+        const auth = new AuthMiddleware(figmaToken);
+        await auth.validateToken();
+        logger.info('Figma access token validated successfully');
+
         const server = new MCPServer(figmaToken, debug, port);
         await server.start();
         return server;

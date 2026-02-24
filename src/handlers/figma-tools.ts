@@ -1,5 +1,6 @@
 import { Tool } from '@modelcontextprotocol/sdk/types';
 import { z } from 'zod';
+import { safeFigmaId } from '../utils/validation.js';
 
 // Tool definitions
 export const FIGMA_TOOLS: Tool[] = [
@@ -259,15 +260,15 @@ export const SearchFilesSchema = z.object({
 });
 
 export const GetFileDetailsSchema = z.object({
-    fileKey: z.string()
+    fileKey: safeFigmaId
 });
 
 export const ListComponentsSchema = z.object({
-    fileKey: z.string()
+    fileKey: safeFigmaId
 });
 
 export const CreateVariablesSchema = z.object({
-    fileKey: z.string(),
+    fileKey: safeFigmaId,
     variables: z.array(
         z.object({
             name: z.string(),
@@ -280,10 +281,10 @@ export const CreateVariablesSchema = z.object({
 });
 
 export const UpdateVariablesSchema = z.object({
-    fileKey: z.string(),
+    fileKey: safeFigmaId,
     updates: z.array(
         z.object({
-            variableId: z.string(),
+            variableId: safeFigmaId,
             value: z.string(),
             description: z.string().optional()
         })
@@ -291,32 +292,32 @@ export const UpdateVariablesSchema = z.object({
 });
 
 export const DeleteVariablesSchema = z.object({
-    fileKey: z.string(),
-    variableIds: z.array(z.string()),
+    fileKey: safeFigmaId,
+    variableIds: z.array(safeFigmaId),
     softDelete: z.boolean().optional().default(false)
 });
 
 export const CreateReferenceSchema = z.object({
-    fileKey: z.string(),
-    sourceId: z.string(),
-    targetId: z.string(),
+    fileKey: safeFigmaId,
+    sourceId: safeFigmaId,
+    targetId: safeFigmaId,
     expression: z.string().optional().default("")
 });
 
 export const ValidateReferencesSchema = z.object({
-    fileKey: z.string(),
-    variableIds: z.array(z.string()).optional()
+    fileKey: safeFigmaId,
+    variableIds: z.array(safeFigmaId).optional()
 });
 
 export const CreateThemeSchema = z.object({
-    fileKey: z.string(),
+    fileKey: safeFigmaId,
     name: z.string(),
     modes: z.array(
         z.object({
             name: z.string(),
             variables: z.array(
                 z.object({
-                    variableId: z.string(),
+                    variableId: safeFigmaId,
                     value: z.string()
                 })
             )

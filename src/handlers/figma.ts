@@ -2,6 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { LRUCache } from 'lru-cache';
 import { z } from 'zod';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { safeFigmaId } from '../utils/validation.js';
 
 interface FigmaApiCallStats {
     lastApiCallTime: number;
@@ -283,7 +284,7 @@ export class FigmaHandler {
 
     async getFigmaFile(args: unknown) {
         const schema = z.object({
-            fileKey: z.string()
+            fileKey: safeFigmaId
         });
         
         const { fileKey } = schema.parse(args);
@@ -339,7 +340,7 @@ export class FigmaHandler {
 
     async listFigmaFiles(args: unknown) {
         const schema = z.object({
-            projectId: z.string()
+            projectId: safeFigmaId
         });
         
         const { projectId } = schema.parse(args);
