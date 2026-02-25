@@ -38,9 +38,11 @@ RUN npm ci --omit=dev --ignore-scripts
 COPY --from=build /app/dist ./dist
 COPY server.js ./
 
-# Create a non-root user/group and switch to it
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-USER appuser
+# Create a non-root user/group with an explicit numeric UID/GID.
+# Using a numeric USER is required for Kubernetes runAsNonRoot verification,
+# which cannot resolve named users from the image manifest at admission time.
+RUN addgroup -S -g 1001 appgroup && adduser -S -u 1001 -G appgroup appuser
+USER 1001
 
 # Expose the HTTP/SSE port
 EXPOSE 3000
