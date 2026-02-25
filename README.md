@@ -192,13 +192,35 @@ The default mode starts an Express HTTP server on port **3000** with three endpo
 
 ### Build the image
 
+The Dockerfile uses a two-stage build:
+1. **Build stage** – installs all dependencies and compiles TypeScript.
+2. **Runtime stage** – production dependencies only, compiled output, and a non-root user (`appuser`).
+
+**For local use only** (builds for your machine's native architecture):
+
 ```bash
 docker build -t figma-mcp-server:latest .
 ```
 
-The Dockerfile uses a two-stage build:
-1. **Build stage** – installs all dependencies and compiles TypeScript.
-2. **Runtime stage** – production dependencies only, compiled output, and a non-root user (`appuser`).
+**For Kubernetes / ECR / any Linux amd64 cluster** (required when building on Apple Silicon):
+
+```bash
+docker buildx build --platform linux/amd64 -t figma-mcp-server:latest .
+```
+
+**For a multi-arch image** (runs on both amd64 clusters and Apple Silicon locally):
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t <your-ecr-registry>/figma-mcp-server:$(git rev-parse --short HEAD) \
+  --push .
+```
+
+> If `docker buildx` reports no builder with multi-platform support, create one first:
+> ```bash
+> docker buildx create --use --name multiarch
+> ```
 
 ### Run the container (HTTP/SSE mode)
 
