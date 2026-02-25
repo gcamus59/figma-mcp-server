@@ -7,7 +7,7 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { FigmaHandler } from './handlers/figma.js';
 import { AuthMiddleware } from './middleware/auth.js';
-import { ServerState, ServerStats } from './types.js';
+import { ServerState } from './types.js';
 import { Logger } from './logger.js';
 
 interface ConnectionStats {
@@ -203,8 +203,15 @@ export class MCPServer extends EventEmitter {
     }
 
     public async start(): Promise<void> {
+        // Idempotent: if already running or listening, do not start again.
+        // Prevents EADDRINUSE when start() is invoked twice (e.g. duplicate module load).
+        if (this.httpServer !== null || this.state === 'running') {
+            this.logger.info('Server already started, skipping duplicate start()');
+            return;
+        }
+
         const app = express();
-        app.use(express.json());
+        app.use(express.json({ limit: '256kb' }));
 
         // Health check — used by K8s liveness/readiness probes
         app.get('/health', (_req: Request, res: Response) => {
@@ -227,7 +234,6 @@ export class MCPServer extends EventEmitter {
 
             try {
                 await mcpServer.connect(transport);
-                await transport.start();
             } catch (error) {
                 this.sessions.delete(transport.sessionId);
                 this.logger.error('SSE session error:', error);
@@ -287,6 +293,7 @@ export class MCPServer extends EventEmitter {
 
             this.httpServer.on('error', (error: Error) => {
                 this.state = 'error';
+                this.httpServer = null;
                 this.logger.error('HTTP server error:', error);
                 this.handleError(error);
                 reject(error);
@@ -312,13 +319,22 @@ export class MCPServer extends EventEmitter {
         }
         this.sessions.clear();
 
+        const closeTimeoutMs = 10_000;
         await new Promise<void>((resolve) => {
             if (!this.httpServer) {
                 resolve();
                 return;
             }
-            this.httpServer.close(() => {
-                this.httpServer = null;
+            const server = this.httpServer;
+            this.httpServer = null;
+            const timeout = setTimeout(() => {
+                if (typeof (server as http.Server).closeAllConnections === 'function') {
+                    (server as http.Server).closeAllConnections();
+                }
+                resolve();
+            }, closeTimeoutMs);
+            server.close(() => {
+                clearTimeout(timeout);
                 resolve();
             });
         });

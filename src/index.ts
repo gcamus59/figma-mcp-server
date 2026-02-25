@@ -27,7 +27,14 @@ const main = async (): Promise<MCPServer> => {
     }
 };
 
-if (import.meta.url.startsWith('file:')) {
+// Only run main() when this file is the direct entry point (e.g. node dist/index.js).
+// When loaded by server.js, server.js calls the default export itself; running main()
+// here would cause two MCPServer instances and EADDRINUSE.
+const isDirectEntry =
+    typeof process !== 'undefined' &&
+    process.argv[1] &&
+    (process.argv[1].endsWith('index.js') || process.argv[1].endsWith('index.mjs'));
+if (isDirectEntry) {
     main().catch(error => {
         console.error('Fatal Error:', error);
         process.exit(1);
