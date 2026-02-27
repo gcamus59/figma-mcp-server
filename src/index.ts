@@ -10,8 +10,11 @@ const main = async (): Promise<MCPServer> => {
         throw new Error('FIGMA_ACCESS_TOKEN environment variable is required');
     }
 
+    const debug = process.env.DEBUG === 'true' || (process.env.DEBUG?.length ?? 0) > 0;
+    const port = parseInt(process.env.MCP_SERVER_PORT ?? '3000', 10) || 3000;
+
     try {
-        const server = await startServer(figmaToken, true);
+        const server = await startServer(figmaToken, debug, port);
         
         // Handle cleanup
         process.on('SIGINT', async () => {
