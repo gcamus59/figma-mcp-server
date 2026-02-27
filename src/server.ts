@@ -278,7 +278,9 @@ export class MCPServer extends EventEmitter {
             }
 
             try {
-                await transport.handlePostMessage(req, res);
+                // Pass the already-parsed body so the SDK does not attempt to
+                // re-read a stream that express.json() has already consumed.
+                await transport.handlePostMessage(req, res, req.body);
             } catch (error) {
                 this.logger.error('Error handling POST message:', error);
                 if (!res.headersSent) {
