@@ -261,12 +261,13 @@ docker compose down
 
 Alternatively, create a local `.env` file (already in `.gitignore`) and uncomment the `env_file` block in `docker-compose.yml`.
 
-### Kubernetes + Kong ingress
+### Kubernetes ingress
 
-Kubernetes manifests (Deployment, Service, Secret, etc.) are handled in a separate PR. Key points for operators:
+Kubernetes manifests (Deployment, Service, Secret, etc.) are handled separately. Key points for operators:
 
-- **Sticky sessions are required.** Each `/sse` connection is stateful — the matching `POST /messages` calls must reach the same pod. Configure Kong with `hash_on: cookie` upstream or the `session` plugin.
-- **Increase `proxy_read_timeout`** on the Kong route to at least `3600` seconds to keep SSE connections alive.
+- **Sticky sessions are required.** Each `/sse` connection is stateful — the matching `POST /messages` calls must reach the same pod. Configure your ingress controller or load balancer to pin a client to a specific pod (e.g. cookie-based affinity).
+- **Increase the proxy read timeout** on the ingress route to at least `3600` seconds to keep SSE connections alive.
+- **SSE keepalives:** the server automatically sends a periodic SSE comment (`: keepalive`) every **30 seconds** by default to prevent idle proxies from closing the connection. The interval is configurable via the `SSE_KEEPALIVE_INTERVAL_MS` environment variable (minimum 5000 ms, maximum 60000 ms).
 - **Health check:** use `GET /health` (returns HTTP 200 when healthy, 503 when not) for both liveness and readiness probes.
 - **Secret injection:** set `FIGMA_ACCESS_TOKEN` via a Kubernetes Secret mounted as an environment variable.
 - **Single replica** avoids the sticky-session requirement entirely — a valid choice for low-traffic internal tooling.

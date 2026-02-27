@@ -227,7 +227,24 @@ export class MCPServer extends EventEmitter {
 
             this.sessions.set(transport.sessionId, transport);
 
+            // Periodic SSE comment to keep the connection alive through proxies
+            // that close idle connections after their read timeout.
+            // SSE comments (lines starting with ':') are ignored by MCP clients.
+            const keepaliveIntervalMs = Math.min(
+                60_000,
+                Math.max(5_000, parseInt(process.env.SSE_KEEPALIVE_INTERVAL_MS ?? '30000', 10) || 30_000)
+            );
+            let keepaliveInterval: NodeJS.Timeout | null = setInterval(() => {
+                if (!res.writableEnded) {
+                    res.write(': keepalive\n\n');
+                }
+            }, keepaliveIntervalMs);
+
             res.on('close', () => {
+                if (keepaliveInterval !== null) {
+                    clearInterval(keepaliveInterval);
+                    keepaliveInterval = null;
+                }
                 this.logger.info('SSE connection closed, session:', transport.sessionId);
                 this.sessions.delete(transport.sessionId);
             });
@@ -235,6 +252,10 @@ export class MCPServer extends EventEmitter {
             try {
                 await mcpServer.connect(transport);
             } catch (error) {
+                if (keepaliveInterval !== null) {
+                    clearInterval(keepaliveInterval);
+                    keepaliveInterval = null;
+                }
                 this.sessions.delete(transport.sessionId);
                 this.logger.error('SSE session error:', error);
                 if (error instanceof Error) this.handleError(error);
